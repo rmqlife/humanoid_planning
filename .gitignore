@@ -1,0 +1,11 @@
+**/build/
+**/.vscode/
+**/logs/
+/autogenerate/
+__pycache__/
+
+# Large third-party library files
+example/thirdparty/libtorch/lib/libdnnl.a
+example/thirdparty/libtorch/lib/libtorch_cpu.so
+**/thirdparty/libtorch/lib/*.so
+**/thirdparty/libtorch/lib/*.a
