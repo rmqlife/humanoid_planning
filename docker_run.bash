@@ -1,11 +1,15 @@
 xhost +local:root
 
+# Set up X11 socket for display forwarding
+XSOCK=/tmp/.X11-unix
+
 docker run -it --rm \
  -e DISPLAY=$DISPLAY \
  -v "$(pwd)":/workspace \
  -w /workspace \
  -v $XSOCK:$XSOCK \
- -v $HOME/.Xauthority:/root/.Xauthority \
+ -e XAUTHORITY=/tmp/.Xauthority \
+ -v $HOME/.Xauthority:/tmp/.Xauthority:rw \
  --privileged \
  --net=host \
  --ipc=host \
