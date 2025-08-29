@@ -31,18 +31,52 @@ def interpolate_position(init_pos, target_pos, step, total_steps):
     return [i + (t - i) * step / total_steps for i, t in zip(init_pos, target_pos)]
 
 
-def convert_to_pose_format(q_list, joint_structure):
-    """Convert IK solution to pose format for manipulators"""
-    pos = joint_structure.copy()
-
-    # Extract manipulator joint values from IK solution
-    left_manipulator = q_list[15:22]
-    right_manipulator = q_list[22:]
+def joints_to_q(joints_dict, q0):
+    """
+    Convert joint dictionary to full configuration vector q
     
-    pos["left_manipulator"] = left_manipulator.copy()
-    pos["right_manipulator"] = right_manipulator.copy()
+    Args:
+        joints_dict (dict): Dictionary with joint groups and their positions
+        q0 (np.array): Base configuration vector
+    
+    Returns:
+        np.array: Full configuration vector q
+    """
+    q = q0.copy()
+    
+    # Map joint groups to their indices in the configuration vector
+    if "left_manipulator" in joints_dict:
+        q[15:22] = joints_dict["left_manipulator"]
+    if "right_manipulator" in joints_dict:
+        q[22:29] = joints_dict["right_manipulator"]
+    if "left_hand" in joints_dict:
+        q[29:35] = joints_dict["left_hand"]
+    if "right_hand" in joints_dict:
+        q[35:41] = joints_dict["right_hand"]
+    
+    return q
 
-    return pos
+
+def q_to_joints(q, joint_structure):
+    """
+    Convert full configuration vector q to joint dictionary
+    
+    Args:
+        q (np.array): Full configuration vector
+        joint_structure (dict): Template joint structure
+    
+    Returns:
+        dict: Joint dictionary with extracted values
+    """
+    joints = joint_structure.copy()
+    
+    # Extract joint values from configuration vector
+    joints["left_manipulator"] = q[15:22].copy()
+    joints["right_manipulator"] = q[22:29].copy()
+    joints["left_hand"] = q[29:35].copy()
+    joints["right_hand"] = q[35:41].copy()
+    
+    return joints
 
 
 def setup_robot_model(urdf_path=None):
@@ -111,7 +145,11 @@ class HumanoidPlanner:
         
         # Setup robot model and IK tasks
         self.robot = setup_robot_model(urdf_path)
-        self.left_task, self.right_task = create_ik_tasks()
+        left_task, right_task = create_ik_tasks()
+        self.ik_tasks = {
+            "left_end_effector_link": left_task,
+            "right_end_effector_link": right_task
+        }
         
         # Set robot to appropriate mode
         fsm_state = 2 if is_simulation else 11
@@ -121,35 +159,31 @@ class HumanoidPlanner:
         self.joint_structure = {
             "left_manipulator": [0, 0, 0, 0, 0, 0, 0],
             "right_manipulator": [0, 0, 0, 0, 0, 0, 0],
-            "left_hand": [0, 0, 0, 0, 0, 0],
-            "right_hand": [0, 0, 0, 0, 0, 0],
         }
-    
-    def solve_ik(self, target_poses):
+        if not self.is_simulation:
+            self.joint_structure["left_hand"] = [0, 0, 0, 0, 0, 0]
+            self.joint_structure["right_hand"] = [0, 0, 0, 0, 0, 0]
+        
+        # Store joint group keys for easy access
+        self.joint_groups = list(self.joint_structure.keys())
+
+    def set_poses(self, target_poses, duration=3):
         """
-        Solve inverse kinematics for dual-arm robot
+        Set end effector poses using IK and execute the movement
         
         Args:
             target_poses (dict): Dictionary with 'left_end_effector' and 'right_end_effector' 
                                 containing pin.SE3 objects
-            
-        Returns:
-            dict: Joint positions for manipulators
+            duration (float): Movement duration in seconds
         """
         dt = 1e-2
         stop_threshold = 1e-6
         max_iterations = 1000
         
         # Set target poses (already pin.SE3 objects)
-        left_target = target_poses["left_end_effector"]
-        right_target = target_poses["right_end_effector"]
-        
-        self.left_task.set_target(left_target)
-        self.right_task.set_target(right_target)
-        
-        print(f"Target left EE position: {left_target.translation}")
-        print(f"Target right EE position: {right_target.translation}")
-        
+        for frame_name, task in self.ik_tasks.items():
+            if frame_name in target_poses:
+                task.set_target(target_poses[frame_name])
         # Initialize configuration
         configuration = pink.Configuration(self.robot.model, self.robot.data, self.robot.q0)
         
@@ -159,18 +193,18 @@ class HumanoidPlanner:
         
         while nb_steps < max_iterations:
             # Compute errors
-            left_error = np.linalg.norm(self.left_task.compute_error(configuration))
-            right_error = np.linalg.norm(self.right_task.compute_error(configuration))
-            total_error = left_error + right_error
+            total_error = 0
+            for task in self.ik_tasks.values():
+                total_error += np.linalg.norm(task.compute_error(configuration))
             
             if total_error < stop_threshold:
                 print(f"Converged! Total error: {total_error:.6f}")
                 break
                 
-            # Solve IK with both tasks
+            # Solve IK with all tasks
             dv = pink.solve_ik(
                 configuration,
-                tasks=[self.left_task, self.right_task],
+                tasks=list(self.ik_tasks.values()),
                 dt=dt,
                 damping=1e-8,
                 solver="quadprog",
@@ -184,7 +218,11 @@ class HumanoidPlanner:
         if nb_steps >= max_iterations:
             print(f"Warning: Reached maximum iterations ({max_iterations})")
         
-        return convert_to_pose_format(q_out, self.joint_structure)
+        # Convert IK solution to joint format
+        ik_solution = q_to_joints(q_out, self.joint_structure)
+        
+        # Execute the movement using set_joints
+        self.set_joints(ik_solution, duration)
     
     def get_joints(self):
         """
@@ -195,13 +233,9 @@ class HumanoidPlanner:
         """
         pos = self.joint_structure.copy()
 
-        pos["left_manipulator"] = self.client.get_group_state("left_manipulator", "position")
-        pos["right_manipulator"] = self.client.get_group_state("right_manipulator", "position")
-        
-        # Only read hand data if not in simulation mode
-        if not self.is_simulation:
-            pos["left_hand"] = self.client.get_group_state("left_hand", "position")
-            pos["right_hand"] = self.client.get_group_state("right_hand", "position")
+        # Get all joint group positions
+        for joint_group in self.joint_groups:
+            pos[joint_group] = self.client.get_group_state(joint_group, "position")
         
         return pos
     
@@ -215,32 +249,20 @@ class HumanoidPlanner:
         # Get current joint positions
         current_joints = self.get_joints()
         
-        # Create full joint configuration vector
-        q = self.robot.q0.copy()
-        
-        # Update with current manipulator positions
-        left_manip = current_joints["left_manipulator"]
-        right_manip = current_joints["right_manipulator"]
-        
-        # Assuming left manipulator joints start at index 15, right at index 22
-        q[15:22] = left_manip
-        q[22:29] = right_manip
+        # Convert to full configuration vector
+        q = joints_to_q(current_joints, self.robot.q0)
         
         # Update robot data with current configuration
         pin.computeJointJacobians(self.robot.model, self.robot.data, q)
         pin.updateFramePlacements(self.robot.model, self.robot.data)
         
         # Get end effector poses
-        left_ee_frame_id = self.robot.model.getFrameId("left_end_effector_link")
-        right_ee_frame_id = self.robot.model.getFrameId("right_end_effector_link")
+        poses = {}
+        for ee_name in ["left_end_effector_link", "right_end_effector_link"]:
+            ee_frame_id = self.robot.model.getFrameId(ee_name)
+            poses[ee_name] = self.robot.data.oMf[ee_frame_id]
         
-        left_ee_pose = self.robot.data.oMf[left_ee_frame_id]
-        right_ee_pose = self.robot.data.oMf[right_ee_frame_id]
-        
-        return {
-            "left_end_effector": left_ee_pose,
-            "right_end_effector": right_ee_pose
-        }
+        return poses
     
     def set_joints(self, target_positions, duration=3):
         """
@@ -254,46 +276,16 @@ class HumanoidPlanner:
         total_steps = self.frequency * duration
         
         for step in range(total_steps + 1):
-            positions = {
-                "left_manipulator": interpolate_position(
-                    init_pos["left_manipulator"], 
-                    target_positions["left_manipulator"], 
-                    step, total_steps
-                ),
-                "right_manipulator": interpolate_position(
-                    init_pos["right_manipulator"], 
-                    target_positions["right_manipulator"], 
-                    step, total_steps
-                ),
-            }
+            positions = {}
             
-            # Only include hand data if not in simulation mode
-            if not self.is_simulation:
-                positions["left_hand"] = interpolate_position(
-                    init_pos["left_hand"], 
-                    target_positions["left_hand"], 
-                    step, total_steps
-                )
-                positions["right_hand"] = interpolate_position(
-                    init_pos["right_hand"], 
-                    target_positions["right_hand"], 
+            # Interpolate all joint group positions
+            for joint_group in self.joint_groups:
+                positions[joint_group] = interpolate_position(
+                    init_pos[joint_group], 
+                    target_positions[joint_group], 
                     step, total_steps
                 )
             
             self.client.set_joint_positions(positions)
             time.sleep(1 / self.frequency)
     
-    def set_poses(self, target_poses, duration=3):
-        """
-        Set end effector poses using IK
-        
-        Args:
-            target_poses (dict): Dictionary with 'left_end_effector' and 'right_end_effector' 
-                                containing pin.SE3 objects
-            duration (float): Movement duration in seconds
-        """
-        # Solve IK to get joint positions
-        ik_solution = self.solve_ik(target_poses)
-        
-        # Move to the IK solution
-        self.set_joints(ik_solution, duration)

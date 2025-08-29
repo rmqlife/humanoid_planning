@@ -55,8 +55,8 @@ def main():
     
     # Convert to pinocchio SE3 using original values
     target_poses = {
-        "left_end_effector": xyzortho6d_to_se3(left_6d),
-        "right_end_effector": xyzortho6d_to_se3(right_6d)
+        "left_end_effector_link": xyzortho6d_to_se3(left_6d),
+        "right_end_effector_link": xyzortho6d_to_se3(right_6d)
     }
     
     # Example usage of the HumanoidPlanner class
@@ -80,8 +80,7 @@ def main():
     modified_target_poses = target_poses.copy()
     for _ in range(3):
         time.sleep(1)
-
-        modified_target_poses["left_end_effector"].translation[1] -= 0.05
+        modified_target_poses["left_end_effector_link"].translation[1] -= 0.05
         # modified_target_poses["right_end_effector"].translation[2] += 0.05
         planner.set_poses(modified_target_poses, duration=3)
         print_poses(planner.get_poses())
