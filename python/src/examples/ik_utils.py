@@ -100,29 +100,6 @@ def setup_robot_model(urdf_path=None):
     return robot
 
 
-def create_ik_tasks():
-    """Create IK tasks for left and right end effectors"""
-    left_task = pink.tasks.RelativeFrameTask(
-        "left_end_effector_link",
-        "base_link",
-        position_cost=50.0,
-        orientation_cost=10.0,
-        gain=0.7,
-        lm_damping=1e-3,
-    )
-
-    right_task = pink.tasks.RelativeFrameTask(
-        "right_end_effector_link",
-        "base_link",
-        position_cost=50.0,
-        orientation_cost=10.0,
-        gain=0.7,
-        lm_damping=1e-3,
-    )
-    
-    return left_task, right_task
-
-
 class HumanoidPlanner:
     """A class for planning and controlling humanoid robot movements using IK"""
     
@@ -145,11 +122,7 @@ class HumanoidPlanner:
         
         # Setup robot model and IK tasks
         self.robot = setup_robot_model(urdf_path)
-        left_task, right_task = create_ik_tasks()
-        self.ik_tasks = {
-            "left_end_effector_link": left_task,
-            "right_end_effector_link": right_task
-        }
+        self.build_ik_tasks()
         
         # Set robot to appropriate mode
         fsm_state = 2 if is_simulation else 11
@@ -166,6 +139,42 @@ class HumanoidPlanner:
         
         # Store joint group keys for easy access
         self.joint_groups = list(self.joint_structure.keys())
+
+    def build_ik_tasks(self):
+        """Build IK tasks for left and right end effectors"""
+        left_task = pink.tasks.RelativeFrameTask(
+            "left_end_effector_link",
+            "base_link",
+            position_cost=50.0,
+            orientation_cost=10.0,
+            gain=0.7,
+            lm_damping=1e-3,
+        )
+
+        right_task = pink.tasks.RelativeFrameTask(
+            "right_end_effector_link",
+            "base_link",
+            position_cost=50.0,
+            orientation_cost=10.0,
+            gain=0.7,
+            lm_damping=1e-3,
+        )
+        
+        posture_task = pink.tasks.PostureTask(cost=1e-3)
+        
+        self.ik_tasks = {
+            "left_end_effector_link": left_task,
+            "right_end_effector_link": right_task,
+            "posture_task": posture_task,
+        }
+        
+        # Initialize configuration and set posture target
+        self.configuration = pink.Configuration(self.robot.model, self.robot.data, self.robot.q0)
+        self.set_posture_target_from_current_configuration()
+
+    def set_posture_target_from_current_configuration(self):
+        """Set the posture task target from the current configuration"""
+        self.ik_tasks["posture_task"].set_target_from_configuration(self.configuration)
 
     def set_poses(self, target_poses, duration=3):
         """
@@ -184,9 +193,6 @@ class HumanoidPlanner:
         for frame_name, task in self.ik_tasks.items():
             if frame_name in target_poses:
                 task.set_target(target_poses[frame_name])
-        # Initialize configuration
-        configuration = pink.Configuration(self.robot.model, self.robot.data, self.robot.q0)
-        
         # Solve IK
         print("Solving IK for dual-arm robot...")
         nb_steps = 0
@@ -195,7 +201,7 @@ class HumanoidPlanner:
             # Compute errors
             total_error = 0
             for task in self.ik_tasks.values():
-                total_error += np.linalg.norm(task.compute_error(configuration))
+                total_error += np.linalg.norm(task.compute_error(self.configuration))
             
             if total_error < stop_threshold:
                 print(f"Converged! Total error: {total_error:.6f}")
@@ -203,7 +209,7 @@ class HumanoidPlanner:
                 
             # Solve IK with all tasks
             dv = pink.solve_ik(
-                configuration,
+                self.configuration,
                 tasks=list(self.ik_tasks.values()),
                 dt=dt,
                 damping=1e-8,
@@ -211,15 +217,14 @@ class HumanoidPlanner:
             )
             
             # Integrate joint velocities
-            q_out = pin.integrate(self.robot.model, configuration.q, dv * dt)
-            configuration = pink.Configuration(self.robot.model, self.robot.data, q_out)
+            self.configuration.integrate_inplace(dv, dt)
             nb_steps += 1
         
         if nb_steps >= max_iterations:
             print(f"Warning: Reached maximum iterations ({max_iterations})")
         
         # Convert IK solution to joint format
-        ik_solution = q_to_joints(q_out, self.joint_structure)
+        ik_solution = q_to_joints(self.configuration.q, self.joint_structure)
         
         # Execute the movement using set_joints
         self.set_joints(ik_solution, duration)

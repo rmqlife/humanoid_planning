@@ -61,34 +61,29 @@ def main():
     
     # Example usage of the HumanoidPlanner class
     
-    # Get and print current joint positions
-    print_joints(planner.get_joints())
-    
-    # Print target poses for verification
-    print_poses(target_poses)
-    
-    # Move to initial position
-    input("\nPress Enter to move to initial pose...")
-    planner.set_joints(INIT_JOINTS, duration=3)
-    
     # Move to IK solution using poses
-    input("Press Enter to move to IK solution using poses...")
     planner.set_poses(target_poses, duration=3)
-    
+        ## set posture target from current configuration
+    planner.set_posture_target_from_current_configuration()
 
+    # Move the left end effector in a rectangle in the xy plane
+    # Only copy left end effector pose to new dict
+    modified_target_poses = {"left_end_effector_link": target_poses["left_end_effector_link"].copy()}
+    waypoints = [
+        np.array([0.05, 0.0, 0.0]),   # +x
+        np.array([0.0, 0.05, 0.0]),   # +y
+        np.array([-0.05, 0.0, 0.0]),  # -x
+        np.array([0.0, -0.05, 0.0]),  # -y
+    ]
 
-    modified_target_poses = target_poses.copy()
-    for _ in range(3):
-        time.sleep(1)
-        modified_target_poses["left_end_effector_link"].translation[1] -= 0.05
-        # modified_target_poses["right_end_effector"].translation[2] += 0.05
-        planner.set_poses(modified_target_poses, duration=3)
+    # Run the path by iterating through waypoints
+    for waypoint in waypoints:
+        time.sleep(0.5)
+        modified_target_poses["left_end_effector_link"].translation[0] += waypoint[0]
+        modified_target_poses["left_end_effector_link"].translation[1] += waypoint[1]
+        modified_target_poses["left_end_effector_link"].translation[2] += waypoint[2]
+        planner.set_poses(modified_target_poses, duration=1)
         print_poses(planner.get_poses())
-
-    # Read and print final joint positions
-    input("Press Enter to read final joint positions...")
-    print_joints(planner.get_joints())
-
 
 if __name__ == "__main__":
     main()
